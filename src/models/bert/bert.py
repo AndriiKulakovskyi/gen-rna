@@ -124,110 +124,77 @@ class Embedding(nn.Module):
         x = x + self.pos_embedding(pos)
         return x
 
-# Adjusted BERT Model
+
 class BERT(nn.Module):
     def __init__(self, config: BERTConfig):
         super().__init__()
         self.depth = config.depth
-        self.embedding = Embedding(config.vocab_size, config.max_len, config.dim)
-        self.encoders = nn.ModuleList([EncoderBlock(dim=config.dim,
-                                                    n_heads=config.n_heads,
-                                                    attn_dropout=config.attn_dropout,
-                                                    mlp_dropout=config.mlp_dropout) for _ in range(self.depth)])
-
+        self.dim = config.dim
+        
+        # Token embeddings and positional embeddings
+        self.token_embedding = nn.Embedding(config.vocab_size, config.dim)
+        self.pos_embedding = nn.Embedding(config.max_len, config.dim)
+        
+        # Transformer encoder blocks
+        self.encoders = nn.ModuleList([
+            EncoderBlock(dim=config.dim,
+                         n_heads=config.n_heads,
+                         attn_dropout=config.attn_dropout,
+                         mlp_dropout=config.mlp_dropout)
+            for _ in range(self.depth)
+        ])
+        
+        # Final layer normalization
         self.ln_f = RMSNorm(config.dim)
+        
+        # MLM head for masked token prediction
         self.mlm_head = nn.Linear(config.dim, config.vocab_size, bias=False)
-        self.embedding.class_embedding.weight = self.mlm_head.weight
+        self.token_embedding.weight = self.mlm_head.weight  # Weight tying
 
+        # Special token IDs
         self.pad_token_id = config.pad_token_id
         self.mask_token_id = config.mask_token_id
 
+        # Initialize weights
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
-
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def create_src_mask(self, src):
+        # Create a mask for padding tokens
         return (src != self.pad_token_id).unsqueeze(1).unsqueeze(2)
 
     def forward(self, input_ids, labels=None):
-
+        # Positional encoding
+        pos = torch.arange(0, input_ids.size(1), device=input_ids.device).unsqueeze(0)
+        embeddings = self.token_embedding(input_ids) + self.pos_embedding(pos)
+        
+        # Create source mask
         src_mask = self.create_src_mask(input_ids)
-        enc_out = self.embedding(input_ids)
-
+        
+        # Pass through encoder layers
+        enc_out = embeddings
         for layer in self.encoders:
             enc_out = layer(enc_out, mask=src_mask)
-
+        
+        # Final normalization
         enc_out = self.ln_f(enc_out)
-
+        
+        # Predict masked tokens
         logits = self.mlm_head(enc_out)
 
         if labels is not None:
+            # Compute loss for training
             loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
             return {'loss': loss, 'logits': logits}
         else:
-            # Assuming inference input_ids only have 1 [MASK] token
-            mask_idx = (input_ids == self.mask_token_id).flatten().nonzero().item()
-            mask_preds = nn.functional.softmax(logits[:, mask_idx, :], dim=-1).argmax(dim=-1)
-            return {'mask_predictions': mask_preds}
-        
-        
-# class BERT(nn.Module):
-#     def __init__(self, config):  
-#         super().__init__()
-#         self.depth = config['depth']
-#         self.embedding = Embedding(config['vocab_size'], config['max_len'], config['dim'])
-#         self.encoders = nn.ModuleList([EncoderBlock(dim=config['dim'],
-#                                                     n_heads=config['n_heads'],
-#                                                     attn_dropout=config['attn_dropout'],
-#                                                     mlp_dropout=config['mlp_dropout']) for _ in range(self.depth)])
-        
-#         self.ln_f = RMSNorm(config['dim'])
-#         self.mlm_head = nn.Linear(config['dim'], config['vocab_size'], bias=False)
-#         self.embedding.class_embedding.weight = self.mlm_head.weight
-        
-#         self.pad_token_id = config['pad_token_id']
-#         self.mask_token_id = config['mask_token_id']
-        
-#         self.apply(self._init_weights)
-        
-#     def _init_weights(self, module):
-#         if isinstance(module, nn.Linear):
-#             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-
-#             if module.bias is not None:
-#                 torch.nn.init.zeros_(module.bias)
-
-#         elif isinstance(module, nn.Embedding):
-#             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        
-#     def create_src_mask(self, src):
-#         return (src != self.pad_token_id).unsqueeze(1).unsqueeze(2)
-    
-#     def forward(self, input_ids, labels=None):
-        
-#         src_mask = self.create_src_mask(input_ids)
-#         enc_out = self.embedding(input_ids)
-
-#         for layer in self.encoders:
-#             enc_out = layer(enc_out, mask=src_mask)
-        
-#         enc_out = self.ln_f(enc_out)
-        
-#         logits = self.mlm_head(enc_out)
-        
-#         if labels:
-#             loss = F.cross_entropy(logits.view(-1,logits.size(-1)), labels.view(-1))
-#             return {'loss': loss, 'logits': logits}
-#         else:
-#             # Assuming inference input_ids only have 1 [MASK] token
-#             mask_idx = (input_ids==self.mask_token_id).flatten().nonzero().item()
-#             mask_preds = F.softmax(logits[:, mask_idx, :], dim=-1).argmax(dim=-1)
-#             return {'mask_predictions': mask_preds}
+            # Predict for all `[MASK]` tokens
+            mask_indices = (input_ids == self.mask_token_id).nonzero(as_tuple=True)
+            mask_logits = logits[mask_indices]
+            return {'logits': logits, 'mask_predictions': mask_logits.argmax(dim=-1)}
