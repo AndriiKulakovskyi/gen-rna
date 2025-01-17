@@ -13,7 +13,7 @@ class RNASequenceTokenizer:
         # Try to load vocabulary from nucleotide2id.json if no vocabulary is provided
         if vocabulary is None:
             dir_path = os.path.dirname(os.path.abspath(__file__))
-            file_path = os.path.join(dir_path, "nucleotide2id.json")
+            file_path = os.path.join(dir_path, "vocabulary.json")
             if os.path.exists(file_path):
                 with open(file_path, "r") as file:
                     vocabulary = json.load(file)

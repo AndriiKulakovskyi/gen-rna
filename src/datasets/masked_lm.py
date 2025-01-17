@@ -1,83 +1,44 @@
 import torch
-from torch.utils.data import Dataset
 
 
-class MLMDataset(Dataset):
+def collate_fn_mlm(batch, mask_token_id, mask_prob, pad_token_id, no_mask_tokens, n_tokens, randomize_prob, no_change_prob):
     """
-    Dataset class for Masked Language Modeling (MLM).
-    Prepares RNA sequences for MLM training by tokenizing, truncating, and padding.
-    """
-    def __init__(self, lines, tokenizer, max_length):
-        """
-        Args:
-            lines (list): List of RNA sequences (strings).
-            tokenizer: Tokenizer instance for encoding sequences.
-            max_length (int): Fixed sequence length for padding/truncation.
-        """
-        if not lines or not isinstance(lines, list):
-            raise ValueError("`lines` should be a non-empty list of RNA sequences.")
-        
-        self.lines = lines
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        self.pad_token_id = self.tokenizer.vocabulary["[PAD]"]
-
-    def __len__(self):
-        """Return the number of samples in the dataset."""
-        return len(self.lines)
-
-    def __getitem__(self, idx):
-        """
-        Tokenize, truncate/pad, and return a sequence as input and target.
-        Args:
-            idx (int): Index of the sequence.
-        Returns:
-            tuple: (tokenized_input_ids, tokenized_labels)
-        """
-        line = self.lines[idx]
-
-        # Tokenize the RNA sequence
-        token_ids = self.tokenizer.encode(line)
-
-        # Truncate or pad the sequence to the maximum length
-        
-        token_ids = (
-            token_ids[:self.max_length] +
-            [self.pad_token_id] * max(0, self.max_length - len(token_ids))
-        )
-
-        # Labels are identical to the input at this stage
-        labels = token_ids.copy()
-
-        # Return as tensors
-        return torch.tensor(token_ids, dtype=torch.long), torch.tensor(labels, dtype=torch.long)
-
-
-def collate_fn(batch, mask_token_id, mask_prob, pad_token_id):
-    """
-    Collation function for batching and applying MLM masking.
+    Collation function for batching and applying MLM masking with detailed masking logic.
+    
     Args:
-        batch: List of (input_ids, labels) tuples from dataset.
+        batch: List of tokenized sequences from the dataset.
         mask_token_id (int): Token ID for [MASK].
         mask_prob (float): Probability of masking a token (15% typically).
         pad_token_id (int): Token ID for padding.
+        no_mask_tokens (list): List of token IDs that should not be masked.
+        n_tokens (int): Total number of tokens (used for random token generation).
+        randomize_prob (float): Probability of replacing with a random token.
+        no_change_prob (float): Probability of leaving the original token unchanged.
+
     Returns:
         input_ids (torch.Tensor): Masked input IDs.
-        labels (torch.Tensor): Labels with unmasked tokens set to -100.
+        labels (torch.Tensor): Labels with unmasked tokens set to padding ID.
     """
-    # Stack already padded sequences directly
-    input_ids = torch.stack([item[0] for item in batch])
-    labels = torch.stack([item[1] for item in batch])
+    # Stack sequences from the batch
+    input_ids = torch.stack(batch)
+    labels = input_ids.clone()  # Labels initialized as a copy of input IDs
 
-    # Generate random masking for MLM
-    rand = torch.rand(input_ids.shape)
-    mlm_mask = (rand < mask_prob) & (input_ids != pad_token_id)
+    # Create mask based on probabilities
+    mask = torch.rand(input_ids.shape) < mask_prob
+    for token in no_mask_tokens + [pad_token_id, mask_token_id]:
+        mask &= (input_ids != token)
 
-    # Create masked input IDs and labels
-    masked_input_ids = input_ids.clone()
-    masked_input_ids[mlm_mask] = mask_token_id  # Replace with [MASK] token ID
+    # Apply masking logic
+    unchanged_mask = mask & (torch.rand(input_ids.shape) < no_change_prob)
+    random_token_mask = mask & ~unchanged_mask & (torch.rand(input_ids.shape) < randomize_prob)
+    mask_token_mask = mask & ~unchanged_mask & ~random_token_mask
 
-    masked_labels = labels.clone()
-    masked_labels[~mlm_mask] = -100  # Set non-masked tokens to -100
+    # Replace tokens with [MASK], random tokens, or leave unchanged
+    random_tokens = torch.randint(0, n_tokens, input_ids.shape, device=input_ids.device)
+    input_ids[random_token_mask] = random_tokens[random_token_mask]
+    input_ids[mask_token_mask] = mask_token_id
 
-    return masked_input_ids, masked_labels
+    # Set labels for masked tokens, others to pad_token_id
+    labels[~mask] = pad_token_id
+
+    return input_ids, labels
