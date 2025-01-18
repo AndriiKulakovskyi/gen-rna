@@ -4,8 +4,21 @@ This repository is part of an initiative to build foundational LLM models for RN
 
 ## Models
 
-### BERT-like Model
-The first model implemented is a BERT-like model trained using Masked Language Modeling (MLM).
+ - #### BERT-like Model
+    The first model implemented is a BERT-like model trained using Masked Language Modeling (MLM).
+    
+    You need to install the dependencies:
+    
+    ```bash
+    pip install -r requirements.txt
+    ```
+    
+    ### Training
+    To run the training, execute the following command:
+    ```bash
+    python train_mlm.py
+    ```
+
 
 ## Next Steps
 1. Implement autoregressive LLMs for RNA.

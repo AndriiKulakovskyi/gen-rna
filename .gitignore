@@ -1,4 +1,7 @@
 /data/*
+!/data/
+/logs/*
+!/logs/
 /logs
 
 # Byte-compiled / optimized / DLL files
